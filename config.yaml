@@ -1,0 +1,84 @@
+# VQ-VAE Configuration File
+# Default hyperparameters for experiments
+
+# Model architecture
+model:
+  latent_dim: 256           # Latent space dimension
+  n_hid: 128                # Hidden channels in encoder/decoder
+
+# Codebook settings
+codebook:
+  size: 512                 # Number of codes (K)
+  sizes_sweep: [256, 512, 1024, 2048]  # For sweep experiments
+
+# VQ-EMA quantizer (baseline)
+vq_ema:
+  commitment_cost: 0.25     # Weight for commitment loss
+  decay: 0.99               # EMA decay rate
+  epsilon: 1e-5             # Laplace smoothing constant
+
+# BA-VQ quantizer (our method)
+ba_vq:
+  beta_start: 0.1           # Initial temperature
+  beta_end: 5.0             # Final temperature
+  commitment_cost: 0.25     # Weight for commitment loss
+  ba_iterations: 5          # Number of BA iterations per forward pass
+
+# Training settings
+training:
+  epochs: 100               # Total epochs
+  batch_size: 256           # Batch size
+  lr: 0.0003                # Learning rate (3e-4)
+  num_workers: 4            # DataLoader workers
+
+# Quick test settings (for fast validation)
+quick_test:
+  epochs: 30
+  batch_size: 128
+  codebook_size: 256
+
+# Full comparison experiments
+experiments:
+  baseline_test:
+    quantizer: vq_ema
+    codebook_size: 256
+    epochs: 30
+
+  ba_test:
+    quantizer: ba_vq
+    codebook_size: 256
+    epochs: 30
+
+  vq_k512:
+    quantizer: vq_ema
+    codebook_size: 512
+    epochs: 30
+
+  ba_k512:
+    quantizer: ba_vq
+    codebook_size: 512
+    epochs: 30
+
+# Data settings
+data:
+  dataset: cifar10
+  root: ./data
+  normalize: true           # Normalize to [-1, 1]
+
+# Logging
+logging:
+  project: vq-codebook
+  checkpoint_freq: 10       # Save checkpoint every N epochs
+  use_wandb: true
+
+# Expected performance targets (for validation)
+targets:
+  vq_ema_k512:
+    perplexity: [250, 350]  # Range
+    psnr: [27, 28]
+    usage_rate: [0.60, 0.75]
+
+  ba_vq_k512:
+    perplexity: [300, 400]  # Should be higher than baseline
+    psnr: [27, 28.5]
+    usage_rate: [0.70, 0.85]  # Should be higher than baseline
