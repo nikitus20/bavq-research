@@ -20,78 +20,105 @@ Apply rate-distortion theory via BA algorithm for principled codebook optimizati
 
 ## Quick Start
 
-### 1. Setup Environment
+### GPU Server Setup (Recommended)
+
 ```bash
-# Install dependencies
+# 1. Clone repo
+git clone <your-repo-url> bavq-research
+cd bavq-research
+
+# 2. Create venv and install dependencies
+python3 -m venv venv
+source venv/bin/activate
+
+# 3. Install PyTorch with CUDA
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+pip install -r requirements-cuda.txt
+
+# 4. Verify GPU
+python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}')"
+
+# 5. Quick test (2 epochs, ~2 minutes)
+python train.py --quantizer vq_ema --codebook_size 128 --epochs 2 --batch_size 256 --name test --no_wandb
+
+# 6. Run all experiments (~3-4 hours)
+./run_experiments.sh
+```
+
+### Local Mac Setup (Development Only)
+
+```bash
+# Install dependencies (uses MPS GPU automatically)
 pip install -r requirements.txt
 
-# Login to W&B (optional, use --no_wandb flag to skip)
-wandb login
+# Quick test
+python train.py --quantizer vq_ema --codebook_size 128 --epochs 2 --batch_size 64 --name test --no_wandb
 ```
 
-### 2. Quick Smoke Test (~5 minutes)
-
-Verify everything works before running full experiments:
+### Individual Experiments
 
 ```bash
-python train.py --quantizer vq_ema --codebook_size 128 --epochs 2 \
-    --batch_size 32 --name smoke_test --no_wandb
-```
+# VQ-EMA K=256 baseline
+python train.py --quantizer vq_ema --codebook_size 256 --epochs 30 --batch_size 256 --name vq_ema_k256 --no_wandb
 
-### 3. Full Validation Experiments (~90 minutes total)
+# BA-VQ K=256 (our method)
+python train.py --quantizer ba_vq --codebook_size 256 --epochs 30 --batch_size 256 --name ba_vq_k256 --no_wandb
 
-**Experiment 1: Baseline VQ-EMA (K=256, 30 epochs)**
-```bash
-python train.py --quantizer vq_ema --codebook_size 256 --epochs 30 --name baseline_test
-```
+# VQ-EMA K=512 baseline
+python train.py --quantizer vq_ema --codebook_size 512 --epochs 30 --batch_size 256 --name vq_ema_k512 --no_wandb
 
-**Experiment 2: BA-VQ (K=256, 30 epochs)**
-```bash
-python train.py --quantizer ba_vq --codebook_size 256 --epochs 30 --name ba_test
-```
-
-**Experiment 3: Baseline at K=512**
-```bash
-python train.py --quantizer vq_ema --codebook_size 512 --epochs 30 --name vq_k512
-```
-
-**Experiment 4: BA-VQ at K=512**
-```bash
-python train.py --quantizer ba_vq --codebook_size 512 --epochs 30 --name ba_k512
-```
-
-### 4. Analyze Results
-```bash
-# Open Jupyter notebook
-jupyter notebook analyze.ipynb
-
-# Or check W&B dashboard
-# https://wandb.ai/your-username/vq-codebook
+# BA-VQ K=512 (our method)
+python train.py --quantizer ba_vq --codebook_size 512 --epochs 30 --batch_size 256 --name ba_vq_k512 --no_wandb
 ```
 
 ## Project Structure
 
 ```
 bavq-research/
-├── vqvae.py           # Complete VQ-VAE implementation (~640 lines)
-│                      #   - Encoder/Decoder
-│                      #   - VQ-EMA quantizer (baseline)
-│                      #   - BA-VQ quantizer (our method)
-│                      #   - Training loop
-│                      #   - Metrics
+├── vqvae.py               # Complete VQ-VAE implementation (~650 lines)
+│                          #   - Encoder/Decoder
+│                          #   - VQ-EMA quantizer (baseline)
+│                          #   - BA-VQ quantizer (our method)
+│                          #   - Training loop + metrics
 │
-├── train.py           # Simple CLI wrapper
-├── config.yaml        # Default hyperparameters
-├── analyze.ipynb      # Results analysis notebook
-├── requirements.txt   # Dependencies
+├── train.py               # CLI wrapper
+├── run_experiments.sh     # Run all 4 experiments sequentially
 │
-├── experiments/       # Auto-created during training (gitignored)
+├── config.yaml            # Default hyperparameters
+├── config_gpu.yaml        # GPU server config (batch=256)
+├── config_mac.yaml        # Mac local config (batch=64)
+│
+├── requirements.txt       # Dependencies (Mac/CPU)
+├── requirements-cuda.txt  # Dependencies (GPU server)
+│
+├── analyze.ipynb          # Results analysis notebook
+├── CODE_OVERVIEW.md       # Detailed implementation guide
+│
+├── experiments/           # Created during training (gitignored)
 │   └── [run_name]/
 │       ├── final_model.pt
 │       ├── final_metrics.json
-│       └── checkpoint_epoch*.pt
+│       └── checkpoint_epoch_*.pt
 │
-└── data/              # CIFAR-10 (auto-downloaded, gitignored)
+├── logs/                  # Created by run_experiments.sh
+│   └── [run_name].log
+│
+└── data/                  # CIFAR-10 (auto-downloaded, gitignored)
+```
+
+## Viewing Results
+
+After experiments complete:
+
+```bash
+# Quick summary (command line)
+for exp in experiments/*/final_metrics.json; do
+  echo "$(dirname $exp):"
+  python -c "import json; m=json.load(open('$exp')); print(f\"  PSNR: {m['psnr']:.2f} dB, Perplexity: {m['perplexity']:.1f}, Usage: {m['usage_rate']*100:.1f}%\")"
+done
+
+# Detailed analysis (Jupyter)
+jupyter notebook analyze.ipynb
 ```
 
 ## Expected Results

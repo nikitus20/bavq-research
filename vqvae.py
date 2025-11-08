@@ -246,6 +246,9 @@ class BAQuantizer(nn.Module):
             log_Q = torch.log(Q.clamp(min=1e-10))
             logits = log_Q.unsqueeze(0) - self.beta * distances  # [N, K]
 
+            # Numerical stability: subtract rowwise max before softmax
+            logits = logits - logits.max(dim=1, keepdim=True).values
+
             # Compute soft assignments P(k|x)
             P = F.softmax(logits, dim=1)
 
@@ -384,13 +387,18 @@ def get_dataloaders(batch_size=256, num_workers=4):
     # pin_memory only helps with CUDA, not MPS
     use_pin_memory = torch.cuda.is_available()
 
+    # persistent_workers speeds up training when num_workers > 0
+    use_persistent = num_workers > 0
+
     train_loader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True,
-        num_workers=num_workers, pin_memory=use_pin_memory
+        num_workers=num_workers, pin_memory=use_pin_memory,
+        persistent_workers=use_persistent
     )
     val_loader = DataLoader(
         val_dataset, batch_size=batch_size, shuffle=False,
-        num_workers=num_workers, pin_memory=use_pin_memory
+        num_workers=num_workers, pin_memory=use_pin_memory,
+        persistent_workers=use_persistent
     )
 
     return train_loader, val_loader
@@ -547,8 +555,7 @@ def validate(model, loader, device):
     total_recon_loss = 0
     total_quant_losses = {}
     all_code_indices = []
-    all_x = []
-    all_x_recon = []
+    sum_mse_psnr = 0.0
     n_batches = 0
 
     with torch.no_grad():
@@ -569,10 +576,10 @@ def validate(model, loader, device):
 
             all_code_indices.append(metrics['code_indices'])
 
-            # Save first batch for PSNR
-            if n_batches == 0:
-                all_x = x
-                all_x_recon = x_recon
+            # Accumulate MSE for PSNR over all batches
+            x_denorm = (x * 0.5 + 0.5).clamp(0.0, 1.0)
+            x_recon_denorm = (x_recon * 0.5 + 0.5).clamp(0.0, 1.0)
+            sum_mse_psnr += F.mse_loss(x_denorm, x_recon_denorm, reduction='mean').item()
 
             n_batches += 1
 
@@ -580,7 +587,10 @@ def validate(model, loader, device):
     all_code_indices = torch.cat(all_code_indices)
     perplexity = compute_perplexity(all_code_indices, model.quantizer.num_embeddings)
     usage_rate = compute_usage_rate(all_code_indices, model.quantizer.num_embeddings)
-    psnr = compute_psnr(all_x, all_x_recon)
+
+    # Compute PSNR from mean MSE over all batches
+    mean_mse = sum_mse_psnr / max(1, n_batches)
+    psnr = 10.0 * math.log10(1.0 / (mean_mse + 1e-12))
 
     metrics_dict = {
         'loss': total_loss / n_batches,
@@ -596,6 +606,14 @@ def validate(model, loader, device):
     # Add beta for BA-VQ
     if hasattr(model.quantizer, 'beta'):
         metrics_dict['beta'] = model.quantizer.beta.item()
+
+    # Add π (global prior) metrics for BA-VQ
+    if hasattr(model.quantizer, 'pi'):
+        pi = model.quantizer.pi
+        H_pi = -(pi * (pi + 1e-10).log()).sum().item()
+        ppl_pi = math.exp(H_pi)
+        metrics_dict['pi_entropy'] = H_pi
+        metrics_dict['pi_perplexity'] = ppl_pi
 
     return metrics_dict
 
