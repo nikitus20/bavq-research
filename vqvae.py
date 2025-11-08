@@ -102,13 +102,14 @@ class VQEMAQuantizer(nn.Module):
     Standard VQ with EMA updates (baseline)
     Following VQ-VAE paper: https://arxiv.org/abs/1711.00937
     """
-    def __init__(self, num_embeddings, embedding_dim, commitment_cost=0.25, decay=0.99, epsilon=1e-5):
+    def __init__(self, num_embeddings, embedding_dim, commitment_cost=0.25, decay=0.8, epsilon=1e-5, metric='euclid'):
         super().__init__()
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
         self.commitment_cost = commitment_cost
         self.decay = decay
         self.epsilon = epsilon
+        self.metric = metric  # 'euclid' or 'cosine'
 
         # Codebook
         self.embedding = nn.Embedding(num_embeddings, embedding_dim)
@@ -133,11 +134,18 @@ class VQEMAQuantizer(nn.Module):
         z_flat = z_flat.view(-1, D)
 
         # Compute distances to codebook: [B*H*W, K]
-        distances = (
-            torch.sum(z_flat**2, dim=1, keepdim=True)
-            + torch.sum(self.embedding.weight**2, dim=1)
-            - 2 * torch.matmul(z_flat, self.embedding.weight.t())
-        )
+        if self.metric == 'cosine':
+            # Cosine distance: 1 - cos_sim
+            # Normalize for lookup only (codes stay unnormalized)
+            z_flat_norm = F.normalize(z_flat, dim=1)
+            codes_norm = F.normalize(self.embedding.weight, dim=1)
+            distances = 1 - torch.matmul(z_flat_norm, codes_norm.t())
+        else:  # euclidean
+            distances = (
+                torch.sum(z_flat**2, dim=1, keepdim=True)
+                + torch.sum(self.embedding.weight**2, dim=1)
+                - 2 * torch.matmul(z_flat, self.embedding.weight.t())
+            )
 
         # Find nearest codes
         encoding_indices = torch.argmin(distances, dim=1)  # [B*H*W]
@@ -180,11 +188,14 @@ class VQEMAQuantizer(nn.Module):
         # Compute metrics
         perplexity = compute_perplexity(encoding_indices, self.num_embeddings)
         usage_rate = compute_usage_rate(encoding_indices, self.num_embeddings)
+        # Quantization error: mean squared distance to assigned codes
+        quant_error = F.mse_loss(z_flat, self.embedding(encoding_indices))
 
         loss_dict = {'commitment_loss': commitment_loss}
         metrics_dict = {
             'perplexity': perplexity,
             'usage_rate': usage_rate,
+            'quant_error': quant_error.item(),
             'code_indices': encoding_indices
         }
 
@@ -197,7 +208,8 @@ class BAQuantizer(nn.Module):
     Uses soft assignments + entropy regularization
     """
     def __init__(self, num_embeddings, embedding_dim,
-                 beta_start=0.1, beta_end=5.0, commitment_cost=0.25, ba_iterations=5):
+                 beta_start=0.5, beta_end=3.0, commitment_cost=0.25, ba_iterations=3,
+                 entropy_weight=0.005, metric='euclid'):
         super().__init__()
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
@@ -205,6 +217,8 @@ class BAQuantizer(nn.Module):
         self.beta_end = beta_end
         self.commitment_cost = commitment_cost
         self.ba_iterations = ba_iterations
+        self.entropy_weight = entropy_weight
+        self.metric = metric  # 'euclid' or 'cosine'
 
         # Codebook (trainable via gradients, not EMA)
         self.embedding = nn.Embedding(num_embeddings, embedding_dim)
@@ -273,11 +287,17 @@ class BAQuantizer(nn.Module):
         z_flat = z_flat.view(-1, D)
 
         # Compute distances to codebook: [B*H*W, K]
-        distances = (
-            torch.sum(z_flat**2, dim=1, keepdim=True)
-            + torch.sum(self.embedding.weight**2, dim=1)
-            - 2 * torch.matmul(z_flat, self.embedding.weight.t())
-        )
+        if self.metric == 'cosine':
+            # Cosine distance: 1 - cos_sim
+            z_flat_norm = F.normalize(z_flat, dim=1)
+            codes_norm = F.normalize(self.embedding.weight, dim=1)
+            distances = 1 - torch.matmul(z_flat_norm, codes_norm.t())
+        else:  # euclidean
+            distances = (
+                torch.sum(z_flat**2, dim=1, keepdim=True)
+                + torch.sum(self.embedding.weight**2, dim=1)
+                - 2 * torch.matmul(z_flat, self.embedding.weight.t())
+            )
 
         # BA algorithm for soft assignments
         P, Q = self._blahut_arimoto_step(distances)  # [B*H*W, K], [K]
@@ -301,7 +321,7 @@ class BAQuantizer(nn.Module):
 
         # Entropy regularization (encourage uniform usage)
         entropy = -torch.sum(Q * torch.log(Q.clamp(min=1e-10)))
-        entropy_loss = -0.01 * entropy  # Negative because we want to maximize entropy
+        entropy_loss = -self.entropy_weight * entropy  # Negative because we want to maximize entropy
 
         # Soft→hard STE: forward uses hard quantization, backward uses soft
         z_q_hard = self.embedding(encoding_indices)
@@ -313,6 +333,12 @@ class BAQuantizer(nn.Module):
         # Compute metrics
         perplexity = compute_perplexity(encoding_indices, self.num_embeddings)
         usage_rate = compute_usage_rate(encoding_indices, self.num_embeddings)
+        # Quantization error: mean squared distance to assigned codes
+        quant_error = F.mse_loss(z_flat, z_q_hard)
+
+        # Global prior π metrics
+        H_pi = -(self.pi * (self.pi + 1e-10).log()).sum().item()
+        ppl_pi = math.exp(H_pi)
 
         loss_dict = {
             'commitment_loss': commitment_loss,
@@ -322,7 +348,10 @@ class BAQuantizer(nn.Module):
         metrics_dict = {
             'perplexity': perplexity,
             'usage_rate': usage_rate,
+            'quant_error': quant_error.item(),
             'beta': self.beta.item(),
+            'pi_entropy': H_pi,
+            'pi_perplexity': ppl_pi,
             'code_indices': encoding_indices
         }
 
@@ -335,16 +364,21 @@ class BAQuantizer(nn.Module):
 
 class VQVAE(nn.Module):
     """Complete VQ-VAE - just plug in different quantizers"""
-    def __init__(self, quantizer_type='vq_ema', codebook_size=512, latent_dim=256):
+    def __init__(self, quantizer_type='vq_ema', codebook_size=512, latent_dim=256,
+                 metric='euclid', ema_decay=0.8, ba_beta_start=0.5, ba_beta_end=3.0,
+                 ba_iterations=3, entropy_weight=0.005):
         super().__init__()
         self.encoder = Encoder(latent_dim)
         self.decoder = Decoder(latent_dim)
 
         # Choose quantizer
         if quantizer_type == 'vq_ema':
-            self.quantizer = VQEMAQuantizer(codebook_size, latent_dim)
+            self.quantizer = VQEMAQuantizer(codebook_size, latent_dim, decay=ema_decay, metric=metric)
         elif quantizer_type == 'ba_vq':
-            self.quantizer = BAQuantizer(codebook_size, latent_dim)
+            self.quantizer = BAQuantizer(codebook_size, latent_dim,
+                                        beta_start=ba_beta_start, beta_end=ba_beta_end,
+                                        ba_iterations=ba_iterations, entropy_weight=entropy_weight,
+                                        metric=metric)
         else:
             raise ValueError(f"Unknown quantizer: {quantizer_type}")
 
@@ -451,6 +485,10 @@ def train(model, epochs=100, batch_size=256, lr=3e-4, run_name='experiment', use
         # Validation
         model.eval()
         val_metrics = validate(model, val_loader, device)
+
+        # Clear MPS cache to prevent memory accumulation
+        if device.type == 'mps':
+            torch.mps.empty_cache()
 
         # Print progress
         print(f"Epoch {epoch+1}/{epochs} | "
@@ -574,7 +612,7 @@ def validate(model, loader, device):
             for k, v in quant_loss_dict.items():
                 total_quant_losses[k] = total_quant_losses.get(k, 0) + v.item()
 
-            all_code_indices.append(metrics['code_indices'])
+            all_code_indices.append(metrics['code_indices'].detach().cpu())
 
             # Accumulate MSE for PSNR over all batches
             x_denorm = (x * 0.5 + 0.5).clamp(0.0, 1.0)

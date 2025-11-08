@@ -14,6 +14,10 @@ seaborn>=0.12.0
 pandas>=2.0.0
 scipy>=1.10.0
 
+# Evaluation metrics
+clean-fid>=0.1.35           # For r-FID computation
+Pillow>=9.0.0               # Image processing for FID
+
 # Jupyter for analysis
 jupyter>=1.0.0
 ipykernel>=6.22.0

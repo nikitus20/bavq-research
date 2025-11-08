@@ -20,11 +20,36 @@ Apply rate-distortion theory via BA algorithm for principled codebook optimizati
 
 ## Quick Start
 
-### GPU Server Setup (Recommended)
+### ⚡ GPU Cloud (A100 - 1 Hour)
+
+**Recommended for initial experiments.** Runs 8 core experiments in ~50-60 minutes.
 
 ```bash
 # 1. Clone repo
-git clone <your-repo-url> bavq-research
+git clone https://github.com/nikitus20/bavq-research.git
+cd bavq-research
+
+# 2. Install dependencies
+pip install torch torchvision tqdm pyyaml clean-fid Pillow scipy
+
+# 3. Verify GPU
+python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
+python -c "import torch; print(f'GPU: {torch.cuda.get_device_name(0)}')"
+
+# 4. Run all experiments (8 runs in ~50-60 min)
+python run_gpu_experiments.py
+```
+
+**What it does:**
+- VQ-EMA vs BA-VQ at K=256, K=512, K=1024
+- Euclidean vs Cosine distance metrics
+- Saves results to `experiments/` and summary to `experiments/gpu_run_summary.json`
+
+### GPU Server Setup (Extended Experiments)
+
+```bash
+# 1. Clone repo
+git clone https://github.com/nikitus20/bavq-research.git
 cd bavq-research
 
 # 2. Create venv and install dependencies
@@ -33,7 +58,7 @@ source venv/bin/activate
 
 # 3. Install PyTorch with CUDA
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-pip install -r requirements-cuda.txt
+pip install -r requirements.txt
 
 # 4. Verify GPU
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}')"
@@ -75,18 +100,19 @@ python train.py --quantizer ba_vq --codebook_size 512 --epochs 30 --batch_size 2
 
 ```
 bavq-research/
-├── vqvae.py               # Complete VQ-VAE implementation (~650 lines)
-│                          #   - Encoder/Decoder
-│                          #   - VQ-EMA quantizer (baseline)
-│                          #   - BA-VQ quantizer (our method)
-│                          #   - Training loop + metrics
+├── vqvae.py                  # Complete VQ-VAE implementation (~650 lines)
+│                             #   - Encoder/Decoder
+│                             #   - VQ-EMA quantizer (baseline)
+│                             #   - BA-VQ quantizer (our method)
+│                             #   - Training loop + metrics
 │
-├── train.py               # CLI wrapper
-├── run_experiments.sh     # Run all 4 experiments sequentially
+├── train.py                  # CLI wrapper
+├── eval_cifar.py             # Evaluation script (r-FID, r-IS)
+├── run_gpu_experiments.py    # ⚡ GPU cloud runner (1 hour, 8 experiments)
+├── run_experiments.sh        # Extended experiments (3-4 hours)
 │
-├── config.yaml            # Default hyperparameters
-├── config_gpu.yaml        # GPU server config (batch=256)
-├── config_mac.yaml        # Mac local config (batch=64)
+├── config.yaml               # Default hyperparameters
+├── config_gpu.yaml           # GPU server config (batch=256)
 │
 ├── requirements.txt       # Dependencies (Mac/CPU)
 ├── requirements-cuda.txt  # Dependencies (GPU server)

@@ -14,15 +14,18 @@ codebook:
 # VQ-EMA quantizer (baseline)
 vq_ema:
   commitment_cost: 0.25     # Weight for commitment loss
-  decay: 0.99               # EMA decay rate
+  decay: 0.8                # EMA decay rate (literature standard for CIFAR)
   epsilon: 1e-5             # Laplace smoothing constant
+  metric: euclid            # Distance metric: euclid or cosine
 
 # BA-VQ quantizer (our method)
 ba_vq:
-  beta_start: 0.1           # Initial temperature
-  beta_end: 5.0             # Final temperature
+  beta_start: 0.5           # Initial temperature (CIFAR-optimized)
+  beta_end: 3.0             # Final temperature (CIFAR-optimized)
   commitment_cost: 0.25     # Weight for commitment loss
-  ba_iterations: 5          # Number of BA iterations per forward pass
+  ba_iterations: 3          # Number of BA iterations (literature standard)
+  entropy_weight: 0.005     # Entropy regularization weight (CIFAR-tuned)
+  metric: euclid            # Distance metric: euclid or cosine
 
 # Training settings
 training:

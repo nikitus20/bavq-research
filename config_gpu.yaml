@@ -1,0 +1,96 @@
+# GPU Server Configuration
+# Optimized for CUDA GPU with larger memory
+# Note: run_gpu_experiments.py uses these defaults for 1-hour A100 runs
+
+# Model architecture (same as base)
+model:
+  latent_dim: 256
+  n_hid: 128
+
+# Codebook settings
+codebook:
+  size: 512
+
+# VQ-EMA quantizer (baseline)
+vq_ema:
+  commitment_cost: 0.25
+  decay: 0.8                # Literature standard for CIFAR
+  epsilon: 1e-5
+  metric: euclid            # Distance metric: euclid or cosine
+
+# BA-VQ quantizer (our method)
+ba_vq:
+  beta_start: 0.5           # Start higher for faster convergence
+  beta_end: 3.0             # Conservative upper bound
+  commitment_cost: 0.25
+  ba_iterations: 3          # Literature standard
+  pi_momentum: 0.99
+  entropy_weight: 0.005     # CIFAR-tuned
+  metric: euclid            # Distance metric: euclid or cosine
+
+# Training settings - OPTIMIZED FOR GPU
+training:
+  epochs: 30                # Validation experiments
+  batch_size: 256           # Large batch for GPU (vs 64 on Mac)
+  lr: 0.0003
+  num_workers: 4            # Parallel data loading
+
+# Full validation experiments (4 runs)
+experiments:
+  vq_ema_k256:
+    quantizer: vq_ema
+    codebook_size: 256
+    epochs: 30
+    batch_size: 256
+
+  ba_vq_k256:
+    quantizer: ba_vq
+    codebook_size: 256
+    epochs: 30
+    batch_size: 256
+
+  vq_ema_k512:
+    quantizer: vq_ema
+    codebook_size: 512
+    epochs: 30
+    batch_size: 256
+
+  ba_vq_k512:
+    quantizer: ba_vq
+    codebook_size: 512
+    epochs: 30
+    batch_size: 256
+
+# Data settings
+data:
+  dataset: cifar10
+  root: ./data
+  normalize: true
+
+# Logging
+logging:
+  project: vq-codebook
+  checkpoint_freq: 5        # More frequent for GPU (faster epochs)
+  use_wandb: false          # Set to true if W&B configured on server
+
+# Expected results
+targets:
+  vq_ema_k256:
+    perplexity: [150, 250]
+    usage_rate: [0.50, 0.65]
+    psnr: [27, 28]
+
+  ba_vq_k256:
+    perplexity: [180, 300]  # Goal: +10-20% higher
+    usage_rate: [0.60, 0.75]  # Goal: +10-20% higher
+    psnr: [27, 28.5]
+
+  vq_ema_k512:
+    perplexity: [250, 350]
+    usage_rate: [0.60, 0.70]
+    psnr: [27, 28]
+
+  ba_vq_k512:
+    perplexity: [300, 420]  # Goal: +10-20% higher
+    usage_rate: [0.70, 0.85]  # Goal: +10-20% higher
+    psnr: [27, 28.5]

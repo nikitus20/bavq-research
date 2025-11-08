@@ -28,6 +28,23 @@ def main():
                        help='Number of codes in codebook (default: 512)')
     parser.add_argument('--latent_dim', type=int, default=256,
                        help='Latent dimension (default: 256)')
+    parser.add_argument('--metric', type=str, default='euclid',
+                       choices=['euclid', 'cosine'],
+                       help='Distance metric: euclid or cosine (default: euclid)')
+
+    # VQ-EMA specific
+    parser.add_argument('--ema_decay', type=float, default=0.8,
+                       help='EMA decay rate for VQ-EMA (default: 0.8)')
+
+    # BA-VQ specific
+    parser.add_argument('--ba_beta_start', type=float, default=0.5,
+                       help='BA beta start (default: 0.5)')
+    parser.add_argument('--ba_beta_end', type=float, default=3.0,
+                       help='BA beta end (default: 3.0)')
+    parser.add_argument('--ba_iters', type=int, default=3,
+                       help='BA iterations (default: 3)')
+    parser.add_argument('--entropy_weight', type=float, default=0.005,
+                       help='BA entropy weight (default: 0.005)')
 
     # Training config
     parser.add_argument('--epochs', type=int, default=100,
@@ -52,6 +69,13 @@ def main():
     print(f"Quantizer:      {args.quantizer}")
     print(f"Codebook size:  {args.codebook_size}")
     print(f"Latent dim:     {args.latent_dim}")
+    print(f"Metric:         {args.metric}")
+    if args.quantizer == 'vq_ema':
+        print(f"EMA decay:      {args.ema_decay}")
+    else:  # ba_vq
+        print(f"Beta range:     [{args.ba_beta_start} → {args.ba_beta_end}]")
+        print(f"BA iters:       {args.ba_iters}")
+        print(f"Entropy weight: {args.entropy_weight}")
     print(f"Epochs:         {args.epochs}")
     print(f"Batch size:     {args.batch_size}")
     print(f"Learning rate:  {args.lr}")
@@ -64,7 +88,13 @@ def main():
     model = VQVAE(
         quantizer_type=args.quantizer,
         codebook_size=args.codebook_size,
-        latent_dim=args.latent_dim
+        latent_dim=args.latent_dim,
+        metric=args.metric,
+        ema_decay=args.ema_decay,
+        ba_beta_start=args.ba_beta_start,
+        ba_beta_end=args.ba_beta_end,
+        ba_iterations=args.ba_iters,
+        entropy_weight=args.entropy_weight
     )
 
     # Train
