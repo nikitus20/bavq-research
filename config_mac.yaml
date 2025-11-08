@@ -1,0 +1,57 @@
+# Mac-optimized configuration for local testing
+# Smaller batches, shorter runs, same experiments
+
+# Model architecture (same as base)
+model:
+  latent_dim: 256
+  n_hid: 128
+
+# Codebook settings
+codebook:
+  size: 512
+
+# VQ-EMA quantizer (baseline)
+vq_ema:
+  commitment_cost: 0.25
+  decay: 0.99
+  epsilon: 1e-5
+
+# BA-VQ quantizer (our method)
+ba_vq:
+  beta_start: 0.1
+  beta_end: 5.0
+  commitment_cost: 0.25
+  ba_iterations: 5
+
+# Training settings - REDUCED FOR MAC
+training:
+  epochs: 3               # Quick validation (vs 100)
+  batch_size: 64          # Smaller for Mac memory (vs 256)
+  lr: 0.0003
+  num_workers: 2          # Fewer workers for Mac (vs 4)
+
+# Mac quick test experiments (3 epochs each)
+experiments:
+  mac_quick_vq:
+    quantizer: vq_ema
+    codebook_size: 256
+    epochs: 3
+    batch_size: 64
+
+  mac_quick_ba:
+    quantizer: ba_vq
+    codebook_size: 256
+    epochs: 3
+    batch_size: 64
+
+# Data settings
+data:
+  dataset: cifar10
+  root: ./data
+  normalize: true
+
+# Logging
+logging:
+  project: vq-codebook-mac
+  checkpoint_freq: 5      # More frequent for shorter runs
+  use_wandb: true

@@ -365,13 +365,16 @@ def get_dataloaders(batch_size=256, num_workers=4):
         root='./data', train=False, download=True, transform=transform
     )
 
+    # pin_memory only helps with CUDA, not MPS
+    use_pin_memory = torch.cuda.is_available()
+
     train_loader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True,
-        num_workers=num_workers, pin_memory=True
+        num_workers=num_workers, pin_memory=use_pin_memory
     )
     val_loader = DataLoader(
         val_dataset, batch_size=batch_size, shuffle=False,
-        num_workers=num_workers, pin_memory=True
+        num_workers=num_workers, pin_memory=use_pin_memory
     )
 
     return train_loader, val_loader
@@ -384,8 +387,13 @@ def get_dataloaders(batch_size=256, num_workers=4):
 def train(model, epochs=100, batch_size=256, lr=3e-4, run_name='experiment', use_wandb=True):
     """Simple training loop with W&B logging"""
 
-    # Setup
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # Setup - Smart device selection: MPS (Mac) > CUDA (GPU server) > CPU
+    if torch.backends.mps.is_available():
+        device = torch.device('mps')
+    elif torch.cuda.is_available():
+        device = torch.device('cuda')
+    else:
+        device = torch.device('cpu')
     print(f"Using device: {device}")
 
     model = model.to(device)

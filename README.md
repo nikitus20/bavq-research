@@ -10,6 +10,10 @@ VQ-VAE and VQ-GAN STE training suffer from slow updates of unused codebooks, and
 
 Apply rate-distortion theory via BA algorithm for principled codebook optimization with soft assignments and entropy regularization.
 
+## Documentation
+
+📖 **[CODE_OVERVIEW.md](CODE_OVERVIEW.md)** - Comprehensive guide to all components, metrics, and implementation details
+
 ## Project Status
 
 ✅ **Phase 1: Foundation Complete** - Minimal, working implementation ready for experiments
@@ -25,7 +29,16 @@ pip install -r requirements.txt
 wandb login
 ```
 
-### 2. Run Quick Validation Experiments (~90 minutes total)
+### 2. Quick Smoke Test (~5 minutes)
+
+Verify everything works before running full experiments:
+
+```bash
+python train.py --quantizer vq_ema --codebook_size 128 --epochs 2 \
+    --batch_size 32 --name smoke_test --no_wandb
+```
+
+### 3. Full Validation Experiments (~90 minutes total)
 
 **Experiment 1: Baseline VQ-EMA (K=256, 30 epochs)**
 ```bash
@@ -47,7 +60,7 @@ python train.py --quantizer vq_ema --codebook_size 512 --epochs 30 --name vq_k51
 python train.py --quantizer ba_vq --codebook_size 512 --epochs 30 --name ba_k512
 ```
 
-### 3. Analyze Results
+### 4. Analyze Results
 ```bash
 # Open Jupyter notebook
 jupyter notebook analyze.ipynb
