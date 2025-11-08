@@ -165,8 +165,8 @@ class VQEMAQuantizer(nn.Module):
             dw = torch.matmul(encodings.t(), z_flat)
             self.ema_w = self.ema_w * self.decay + (1 - self.decay) * dw
 
-            # Normalize embeddings
-            self.embedding.weight.data = self.ema_w / self.ema_cluster_size.unsqueeze(1)
+            # Normalize embeddings (add epsilon for numerical stability)
+            self.embedding.weight.data = self.ema_w / (self.ema_cluster_size.unsqueeze(1) + self.epsilon)
 
         # Commitment loss
         commitment_loss = self.commitment_cost * F.mse_loss(z_flat, z_q_flat.detach())
@@ -213,11 +213,17 @@ class BAQuantizer(nn.Module):
         # Current beta (will be updated during training)
         self.register_buffer('beta', torch.tensor(beta_start))
 
+        # Global prior π for dataset-level BA
+        self.register_buffer('pi', torch.full((num_embeddings,), 1.0 / num_embeddings))
+        self.pi_momentum = 0.99
+
     def set_beta(self, epoch, max_epochs):
         """Anneal beta from beta_start to beta_end using cosine schedule"""
         progress = epoch / max(max_epochs, 1)
-        self.beta = self.beta_start + (self.beta_end - self.beta_start) * \
-                   (1 - math.cos(progress * math.pi)) / 2
+        value = self.beta_start + (self.beta_end - self.beta_start) * \
+                (1 - math.cos(progress * math.pi)) / 2
+        # Update tensor in-place to avoid rebinding to float
+        self.beta.data.fill_(value)
 
     def _blahut_arimoto_step(self, distances):
         """
@@ -227,11 +233,12 @@ class BAQuantizer(nn.Module):
             distances: [N, K] pairwise distances
         Returns:
             P: [N, K] soft assignments (probabilities)
+            Q: [K] marginal distribution over codes
         """
         N, K = distances.shape
 
-        # Initialize uniform distribution over codes
-        Q = torch.ones(K, device=distances.device) / K
+        # Initialize from global prior π (dataset-level BA)
+        Q = self.pi.clone()
 
         # BA iterations
         for _ in range(self.ba_iterations):
@@ -246,7 +253,7 @@ class BAQuantizer(nn.Module):
             Q = P.mean(dim=0)
             Q = Q.clamp(min=1e-10)
 
-        return P
+        return P, Q
 
     def forward(self, z):
         """
@@ -270,7 +277,12 @@ class BAQuantizer(nn.Module):
         )
 
         # BA algorithm for soft assignments
-        P = self._blahut_arimoto_step(distances)  # [B*H*W, K]
+        P, Q = self._blahut_arimoto_step(distances)  # [B*H*W, K], [K]
+
+        # Update global prior π with EMA (dataset-level BA)
+        with torch.no_grad():
+            self.pi.mul_(self.pi_momentum).add_((1 - self.pi_momentum) * Q)
+            self.pi.div_(self.pi.sum())  # Renormalize for safety
 
         # Soft quantization: weighted average of codes
         z_q_soft = torch.matmul(P, self.embedding.weight)  # [B*H*W, D]
@@ -281,13 +293,16 @@ class BAQuantizer(nn.Module):
         # Commitment loss (encourage encoder to commit to codes)
         commitment_loss = self.commitment_cost * F.mse_loss(z_flat, z_q_soft.detach())
 
+        # Codebook loss (move embeddings toward encoder outputs)
+        codebook_loss = F.mse_loss(z_q_soft, z_flat.detach())
+
         # Entropy regularization (encourage uniform usage)
-        Q = P.mean(dim=0)
         entropy = -torch.sum(Q * torch.log(Q.clamp(min=1e-10)))
         entropy_loss = -0.01 * entropy  # Negative because we want to maximize entropy
 
-        # Straight-through estimator
-        z_q = z_flat + (z_q_soft - z_flat).detach()
+        # Soft→hard STE: forward uses hard quantization, backward uses soft
+        z_q_hard = self.embedding(encoding_indices)
+        z_q = z_q_soft + (z_q_hard - z_q_soft).detach()
 
         # Reshape back: [B*H*W, D] -> [B, D, H, W]
         z_q = z_q.view(B, H, W, D).permute(0, 3, 1, 2).contiguous()
@@ -298,6 +313,7 @@ class BAQuantizer(nn.Module):
 
         loss_dict = {
             'commitment_loss': commitment_loss,
+            'codebook_loss': codebook_loss,
             'entropy_loss': entropy_loss
         }
         metrics_dict = {
@@ -621,9 +637,17 @@ def compute_psnr(x, x_recon):
     """
     Peak Signal-to-Noise Ratio
     Higher is better (better reconstruction quality)
+
+    De-normalizes from [-1,1] to [0,1] for proper PSNR calculation
     """
+    # De-normalize from [-1, 1] to [0, 1]
+    x = (x * 0.5 + 0.5).clamp(0.0, 1.0)
+    x_recon = (x_recon * 0.5 + 0.5).clamp(0.0, 1.0)
+
     mse = F.mse_loss(x, x_recon)
-    psnr = 20 * torch.log10(torch.tensor(1.0) / torch.sqrt(mse))
+    # Use device-aware max_i and add epsilon for numerical stability
+    max_i = torch.ones((), device=mse.device)
+    psnr = 20 * torch.log10(max_i / torch.sqrt(mse + 1e-12))
     return psnr.item()
 
 
