@@ -120,7 +120,7 @@ def run_experiment(exp_config):
         '--batch_size', str(exp_config['batch_size']),
         '--metric', exp_config['metric'],
         '--name', exp_config['name'],
-        '--no_wandb',  # Disable W&B for automated runs
+        # W&B enabled for tracking GPU experiments
     ]
 
     # Run experiment
