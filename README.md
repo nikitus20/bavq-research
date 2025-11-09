@@ -36,7 +36,10 @@ pip install torch torchvision tqdm pyyaml clean-fid Pillow scipy
 python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
 python -c "import torch; print(f'GPU: {torch.cuda.get_device_name(0)}')"
 
-# 4. Run all experiments (8 runs in ~50-60 min)
+# 4. Configure CUDA allocator for efficient memory management
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True,max_split_size_mb:128"
+
+# 5. Run all experiments (8 runs in ~50-60 min)
 python run_gpu_experiments.py
 ```
 
@@ -63,10 +66,13 @@ pip install -r requirements.txt
 # 4. Verify GPU
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}')"
 
-# 5. Quick test (2 epochs, ~2 minutes)
+# 5. Configure CUDA allocator for efficient memory management
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True,max_split_size_mb:128"
+
+# 6. Quick test (2 epochs, ~2 minutes)
 python train.py --quantizer vq_ema --codebook_size 128 --epochs 2 --batch_size 256 --name test --no_wandb
 
-# 6. Run all experiments (~3-4 hours)
+# 7. Run all experiments (~3-4 hours)
 ./run_experiments.sh
 ```
 

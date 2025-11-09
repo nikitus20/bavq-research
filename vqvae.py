@@ -14,6 +14,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from torch.cuda.amp import autocast, GradScaler
 import torchvision
 from torchvision import transforms
 import wandb
@@ -196,7 +197,7 @@ class VQEMAQuantizer(nn.Module):
             'perplexity': perplexity,
             'usage_rate': usage_rate,
             'quant_error': quant_error.item(),
-            'code_indices': encoding_indices
+            'code_indices': encoding_indices.detach().cpu()  # Move to CPU immediately
         }
 
         return z_q, loss_dict, metrics_dict
@@ -239,12 +240,16 @@ class BAQuantizer(nn.Module):
         # Update tensor in-place to avoid rebinding to float
         self.beta.data.fill_(value)
 
-    def _blahut_arimoto_step(self, distances):
+    def _blahut_arimoto_step(self, distances, chunk_size=4096):
         """
-        Core BA algorithm for soft assignments
+        Memory-efficient chunked BA algorithm for soft assignments
+
+        Processes [N,K] in chunks to avoid materializing full tensor,
+        reducing peak memory from O(N*K) to O(chunk_size*K)
 
         Args:
             distances: [N, K] pairwise distances
+            chunk_size: Process N in chunks of this size (default: 4096)
         Returns:
             P: [N, K] soft assignments (probabilities)
             Q: [K] marginal distribution over codes
@@ -254,21 +259,31 @@ class BAQuantizer(nn.Module):
         # Initialize from global prior π (dataset-level BA)
         Q = self.pi.clone()
 
-        # BA iterations
+        # BA iterations with chunking
         for _ in range(self.ba_iterations):
-            # Compute log-probabilities (numerically stable)
             log_Q = torch.log(Q.clamp(min=1e-10))
-            logits = log_Q.unsqueeze(0) - self.beta * distances  # [N, K]
+            Q_new_sum = torch.zeros_like(Q)
 
-            # Numerical stability: subtract rowwise max before softmax
-            logits = logits - logits.max(dim=1, keepdim=True).values
+            # Process in chunks to reduce memory
+            P_chunks = []
+            for start in range(0, N, chunk_size):
+                end = min(start + chunk_size, N)
+                d_chunk = distances[start:end]  # [chunk_size, K]
 
-            # Compute soft assignments P(k|x)
-            P = F.softmax(logits, dim=1)
+                # Compute soft assignments for this chunk
+                logits = log_Q.unsqueeze(0) - self.beta * d_chunk
+                logits = logits - logits.max(dim=1, keepdim=True).values
+                P_chunk = F.softmax(logits, dim=1)  # [chunk_size, K]
 
-            # Update marginal distribution Q(k)
-            Q = P.mean(dim=0)
-            Q = Q.clamp(min=1e-10)
+                # Accumulate for Q update
+                Q_new_sum += P_chunk.sum(dim=0)
+                P_chunks.append(P_chunk)
+
+            # Update Q (marginal distribution)
+            Q = (Q_new_sum / N).clamp(min=1e-10)
+
+        # Concatenate final P after all BA iterations
+        P = torch.cat(P_chunks, dim=0)  # [N, K]
 
         return P, Q
 
@@ -352,7 +367,7 @@ class BAQuantizer(nn.Module):
             'beta': self.beta.item(),
             'pi_entropy': H_pi,
             'pi_perplexity': ppl_pi,
-            'code_indices': encoding_indices
+            'code_indices': encoding_indices.detach().cpu()  # Move to CPU immediately
         }
 
         return z_q, loss_dict, metrics_dict
@@ -427,12 +442,14 @@ def get_dataloaders(batch_size=256, num_workers=4):
     train_loader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True,
         num_workers=num_workers, pin_memory=use_pin_memory,
-        persistent_workers=use_persistent
+        persistent_workers=use_persistent,
+        drop_last=True  # Prevent allocator fragmentation from varying batch sizes
     )
     val_loader = DataLoader(
         val_dataset, batch_size=batch_size, shuffle=False,
         num_workers=num_workers, pin_memory=use_pin_memory,
-        persistent_workers=use_persistent
+        persistent_workers=use_persistent,
+        drop_last=True  # Prevent allocator fragmentation from varying batch sizes
     )
 
     return train_loader, val_loader
@@ -486,8 +503,11 @@ def train(model, epochs=100, batch_size=256, lr=3e-4, run_name='experiment', use
         model.eval()
         val_metrics = validate(model, val_loader, device)
 
-        # Clear MPS cache to prevent memory accumulation
-        if device.type == 'mps':
+        # Clear GPU cache to prevent memory accumulation and fragmentation
+        if device.type == 'cuda':
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+        elif device.type == 'mps':
             torch.mps.empty_cache()
 
         # Print progress
@@ -549,25 +569,28 @@ def train(model, epochs=100, batch_size=256, lr=3e-4, run_name='experiment', use
 
 
 def train_epoch(model, loader, optimizer, device):
-    """Single training epoch"""
+    """Single training epoch with mixed precision"""
+    # Initialize gradient scaler for mixed precision (only active on CUDA)
+    scaler = GradScaler(enabled=(device.type == 'cuda'))
+
     total_loss = 0
     total_recon_loss = 0
     total_quant_losses = {}
     n_batches = 0
 
     for x, _ in tqdm(loader, desc='Training', leave=False):
-        x = x.to(device)
+        x = x.to(device, non_blocking=True)
 
-        # Forward
-        x_recon, recon_loss, quant_loss_dict, metrics = model(x)
+        # Forward pass with automatic mixed precision
+        optimizer.zero_grad(set_to_none=True)
+        with autocast(enabled=(device.type == 'cuda')):
+            x_recon, recon_loss, quant_loss_dict, metrics = model(x)
+            loss = recon_loss + sum(quant_loss_dict.values())
 
-        # Total loss
-        loss = recon_loss + sum(quant_loss_dict.values())
-
-        # Backward
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        # Backward pass with gradient scaling
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
 
         # Accumulate
         total_loss += loss.item()
@@ -588,7 +611,7 @@ def train_epoch(model, loader, optimizer, device):
 
 
 def validate(model, loader, device):
-    """Validation loop - returns metrics dict"""
+    """Validation loop with mixed precision - returns metrics dict"""
     total_loss = 0
     total_recon_loss = 0
     total_quant_losses = {}
@@ -598,13 +621,12 @@ def validate(model, loader, device):
 
     with torch.no_grad():
         for x, _ in tqdm(loader, desc='Validation', leave=False):
-            x = x.to(device)
+            x = x.to(device, non_blocking=True)
 
-            # Forward
-            x_recon, recon_loss, quant_loss_dict, metrics = model(x)
-
-            # Total loss
-            loss = recon_loss + sum(quant_loss_dict.values())
+            # Forward pass with automatic mixed precision
+            with autocast(enabled=(device.type == 'cuda')):
+                x_recon, recon_loss, quant_loss_dict, metrics = model(x)
+                loss = recon_loss + sum(quant_loss_dict.values())
 
             # Accumulate
             total_loss += loss.item()
@@ -612,7 +634,7 @@ def validate(model, loader, device):
             for k, v in quant_loss_dict.items():
                 total_quant_losses[k] = total_quant_losses.get(k, 0) + v.item()
 
-            all_code_indices.append(metrics['code_indices'].detach().cpu())
+            all_code_indices.append(metrics['code_indices'])
 
             # Accumulate MSE for PSNR over all batches
             x_denorm = (x * 0.5 + 0.5).clamp(0.0, 1.0)
